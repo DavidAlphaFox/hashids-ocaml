@@ -3,35 +3,31 @@
 open General.Abbr
 open IntRef.O
 
-
+(*核心算法，洗牌算法Fisher–Yates的变种*)
 let shuffle x ~salt =
   if x = "" || salt = "" then x else
-  let salt =
-    salt
-    |> Str.to_list
-    |> Li.map ~f:Ch.to_int
-    |> Li.to_array
+  let salt = salt |> Str.to_list |> Li.map ~f:Ch.to_int |> Li.to_array (*整数数组*)
   in
   (* Shuffling is based on swapping characters so we need a copy.
   Maybe we could find an implementation where each char can ben computed
   functionally and avoid mutations? *)
   let x = By.of_string x in
-  let swap i j =
+  let swap i j = (*交换字符串中i和j的内容*)
     let xi = By.get x i
     and xj = By.get x j
     in begin
       x.[j] <- xi;
       x.[i] <- xj
     end
-  and last = By.size x - 1
-  and salt_size = Ar.size salt
+  and last = By.size x - 1 (*字典字符最后的位置*)
+  and salt_size = Ar.size salt (*盐值的长度*)
   and p = ref 0 in
-  for i = last downto 1 do
+  for i = last downto 1 do (*反向遍历*)
     let v = (last - i) mod salt_size in
-    p =+ salt.(v);
-    swap i ((salt.(v) + v + !p) mod i)
+    p =+ salt.(v); (*取出v所在位置的盐值的整数值，并加到p上*)
+    swap i ((salt.(v) + v + !p) mod i) (* 将i和i之前的位置上的字典字符进程对换*)
   done;
-  By.to_string x
+  By.to_string x (*将bytes转成字符串*)
 
 module ShuffleTests = struct
   open Tst
@@ -192,24 +188,22 @@ let encode ~salt ~alphabet ~seps ~guards ~min_length =
   function
     | [] -> ""
     | xs ->
+      (*用来计算随机字符的种子*)
       let seed = Li.fold_i ~init:0 ~f:(fun ~i seed x ->
         if x < 0 then Exn.invalid_argument "negative integer (Hashids can encode only positive integers)";
         seed + x mod (i + 100)) xs
       in
-      let lottery = Str.of_char alphabet.[seed mod alphabet_size] in
+      let lottery = Str.of_char alphabet.[seed mod alphabet_size] in (*得到随机字符*)
       let (hashid, alphabet) =
-        xs
-        |> Li.fold_i ~init:(lottery, alphabet) ~f:(fun ~i (hashid, alphabet) x ->
-          let salt = Str.prefix (lottery ^ salt ^ alphabet) ~len:alphabet_size in
-          let alphabet = shuffle ~salt alphabet in
-          let hashed = hash x ~alphabet in
-          let sep = seps.[x mod (Ch.to_int hashed.[0] + i) mod (Str.size seps)] in
-          let hashid = hashid ^ hashed ^ (Str.of_char sep) in
-          (hashid, alphabet)
-        )
-      in
-      Str.drop_suffix' hashid ~len:1
-      |> box ~min_length ~alphabet ~guards ~seed
+        xs |> Li.fold_i ~init:(lottery, alphabet) ~f:(fun ~i (hashid, alphabet) x ->
+                (*使用随机字符，盐值和字典字符，重新计算一个字典字符长度的盐值*)
+                let salt = Str.prefix (lottery ^ salt ^ alphabet) ~len:alphabet_size in
+                let alphabet = shuffle ~salt alphabet in (*再次洗牌*)
+                let hashed = hash x ~alphabet in (* 计算出对应的hash值 *)
+                let sep = seps.[x mod (Ch.to_int hashed.[0] + i) mod (Str.size seps)] in
+                let hashid = hashid ^ hashed ^ (Str.of_char sep) in
+                (hashid, alphabet))
+      in Str.drop_suffix' hashid ~len:1 |> box ~min_length ~alphabet ~guards ~seed
 
 let decode ~salt ~alphabet ~seps ~guards =
   let seps = Str.to_list seps
@@ -286,32 +280,27 @@ let preprocess =
       let all_seps = all_seps |> Str.to_list |> ChSoSet.of_list in
       Str.fold alphabet ~init:([], ChSoSet.empty, ChSoSet.empty) ~f:(fun (alphabet, seps, seen) v ->
         if v = ' ' then Exn.invalid_argument "alphabet contains space (Hashids cannot contains spaces)";
-        if ChSoSet.contains seen ~v then (alphabet, seps, seen) else
-        let seen = ChSoSet.replace seen ~v in
-        if ChSoSet.contains all_seps ~v then
-          (alphabet, ChSoSet.replace seps ~v, seen)
+        if ChSoSet.contains seen ~v then (alphabet, seps, seen) (*对字符表进行去重*)
         else
-          (v::alphabet, seps, seen)
-      )
+          let seen = ChSoSet.replace seen ~v in
+          if ChSoSet.contains all_seps ~v then (alphabet, ChSoSet.replace seps ~v, seen) (* 确认是否是分隔符 *)
+          else (v::alphabet, seps, seen))
     in
     if ChSoSet.size seen < 16 then
       Exn.invalid_argument "alphabet too short (Hashids requires at least 16 distinct characters)"
     else
-      let alphabet =
-        alphabet
-        |> Li.reverse
-        |> Str.of_list
+      let alphabet = alphabet |> Li.reverse |> Str.of_list
       and seps = Str.filter all_seps ~f:(fun v -> ChSoSet.contains seen_seps ~v) in
-      (alphabet, seps)
+      (alphabet, seps) (*得到字符表和分割字符*)
   and complete_seps alphabet seps =
-    let seps_min_length = length_of_ratio ~alphabet 3.5
+    let seps_min_length = length_of_ratio ~alphabet 3.5 (*最少的分隔符数量*)
     and seps_length = Str.size seps in
     if seps_length < seps_min_length then
       (* In the Python and Java implementations, they ensure that seps_min_length >= 2
       but to have seps_min_length = 1, we need length alphabet <= 3 and since we've
       already checked that length alphabet + length seps >= 16, then we must have
       length seps >= 13 and it's impossible to be in this branch where length seps < 1. *)
-      let diff = seps_min_length - seps_length in
+      let diff = seps_min_length - seps_length in  (* 如果分割符数量不够，就从字典字符中去取出来*)
       let seps = seps ^ (Str.prefix alphabet ~len:diff)
       and alphabet = Str.drop_prefix' alphabet ~len:diff in
       (alphabet, seps)
@@ -322,11 +311,11 @@ let preprocess =
     if Str.size alphabet < 3 then
       let guards = Str.prefix seps ~len:guards_size
       and seps = Str.drop_prefix' seps ~len:guards_size
-      in (alphabet, seps, guards)
+      in (alphabet, seps, guards) (*字典字符不足3，从分隔符中取出守卫字符串*)
     else
       let guards = Str.prefix alphabet ~len:guards_size
       and alphabet = Str.drop_prefix' alphabet ~len:guards_size
-      in (alphabet, seps, guards)
+      in (alphabet, seps, guards) (* 从字典字符中取出守卫字符串 *)
   in
   fun ~salt ~alphabet ->
     let (alphabet, seps) = split_seps alphabet in
